@@ -1,32 +1,67 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+import { handleDefault, routeHandler } from './handlers/handlers';
 
 export interface Env {
-	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
-	// MY_KV_NAMESPACE: KVNamespace;
-	//
-	// Example binding to Durable Object. Learn more at https://developers.cloudflare.com/workers/runtime-apis/durable-objects/
-	// MY_DURABLE_OBJECT: DurableObjectNamespace;
-	//
-	// Example binding to R2. Learn more at https://developers.cloudflare.com/workers/runtime-apis/r2/
-	// MY_BUCKET: R2Bucket;
-	//
-	// Example binding to a Service. Learn more at https://developers.cloudflare.com/workers/runtime-apis/service-bindings/
-	// MY_SERVICE: Fetcher;
-	//
-	// Example binding to a Queue. Learn more at https://developers.cloudflare.com/queues/javascript-apis/
-	// MY_QUEUE: Queue;
+	fauna: string;
+	kv: KVNamespace;
+	key: string;
+	FaunaFlare: DurableObjectNamespace;
 }
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		return new Response('Hello World!');
+		if (request.method !== 'GET') {
+			return new Response('Method not allowed', { status: 405 });
+		}
+
+		const url = new URL(request.url);
+
+		if (url.pathname === '/syncquotes' || url.pathname === '/quotes') {
+			return routeHandler(env, request);
+		}
+
+		if (url.pathname === '/count') {
+			const id = 'counter';
+			const durableID = env.FaunaFlare.idFromName(id);
+			const durableObject = env.FaunaFlare.get(durableID);
+
+			const response = await durableObject.fetch(request);
+			return response;
+		}
+		// redirect all other routes to "/"
+
+		if (url.pathname != '/') {
+			return new Response('', {
+				status: 301,
+				headers: {
+					Location: url.origin + '/',
+				},
+			});
+		}
+		return handleDefault(env);
 	},
 };
+
+export class FaunaFlare {
+	state: DurableObjectState;
+	request: Request;
+	env: Env;
+	url: URL;
+
+	constructor(state: DurableObjectState, env: Env, url: URL, request: Request) {
+		this.state = state;
+		this.env = env as Env;
+		this.url = url;
+		this.request = request;
+	}
+
+	async fetch(request: Request, env: Env, url: URL) {
+		const getcount = (await this.state.storage.get('count')) as number;
+		const count = getcount || 0;
+
+		await this.state.storage.put('count', count + 1);
+
+		return new Response(JSON.stringify({ count: count }), {
+			status: 200,
+		});
+	}
+}
